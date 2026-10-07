@@ -277,6 +277,11 @@ const CLOUDINARY_CLOUD_NAME = "o9nnrrra";
 const CLOUDINARY_UPLOAD_PRESET = "kapper.studio";
 const CLOUDINARY_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
 const CLOUDINARY_VIDEO_UPLOAD_URL = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/video/upload`;
+// Expose the existing Cloudinary configuration to the uploader.
+window.CLOUDINARY_CLOUD_NAME = CLOUDINARY_CLOUD_NAME;
+window.CLOUDINARY_UPLOAD_PRESET = CLOUDINARY_UPLOAD_PRESET;
+window.CLOUDINARY_UPLOAD_URL = CLOUDINARY_UPLOAD_URL;
+window.CLOUDINARY_VIDEO_UPLOAD_URL = CLOUDINARY_VIDEO_UPLOAD_URL;
 </script>
 <script>
 const users={};
@@ -1710,9 +1715,17 @@ document.addEventListener('submit',async e=>{const form=e.target;if(!form.matche
     if(file.size>100*1024*1024){showNoraToast?.('Ukuran maksimal 100 MB.');return false}
     try{
       btn.disabled=true;btn.textContent='Mengunggah…';if(progress)progress.style.width='15%';if(status)status.textContent='Mengunggah video…';
-      const fd=new FormData();fd.append('file',file);fd.append('upload_preset',window.CLOUDINARY_UPLOAD_PRESET||'');
-      const endpoint=window.CLOUDINARY_VIDEO_UPLOAD_URL;if(!endpoint)throw new Error('Konfigurasi upload video belum tersedia.');
-      const res=await fetch(endpoint,{method:'POST',body:fd});const data=await res.json();if(!res.ok)throw new Error(data?.error?.message||'Upload gagal.');
+      const endpoint=window.CLOUDINARY_VIDEO_UPLOAD_URL;
+      const preset=window.CLOUDINARY_UPLOAD_PRESET;
+      if(!endpoint||!preset)throw new Error('Cloudinary belum dikonfigurasi.');
+      const data=await new Promise((resolve,reject)=>{
+        const fd=new FormData();fd.append('file',file);fd.append('upload_preset',preset);
+        const xhr=new XMLHttpRequest();xhr.open('POST',endpoint,true);
+        xhr.upload.onprogress=e=>{if(e.lengthComputable){const pct=Math.max(1,Math.min(99,Math.round(e.loaded/e.total*100)));if(progress)progress.style.width=pct+'%';if(status)status.textContent='Mengunggah video '+pct+'%…';}};
+        xhr.onerror=()=>reject(new Error('Jaringan gagal saat upload ke Cloudinary.'));
+        xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch(_){return reject(new Error('Respons Cloudinary tidak valid.'))}if(xhr.status<200||xhr.status>=300)return reject(new Error(d?.error?.message||'Cloudinary menolak upload.'));resolve(d)};xhr.send(fd);
+      });
+      if(!data.secure_url&&!data.url)throw new Error('Cloudinary tidak mengembalikan URL video.');
       if(progress)progress.style.width='75%';
       const ps=await db.collection('users').doc(user.uid).get(),p=ps.exists?ps.data():{};
       const hashtags=[...new Set((document.getElementById('noreactVideoHashtags')?.value||'').split(/\s+/).map(x=>x.replace(/^#/,'').toLowerCase()).filter(Boolean))];
