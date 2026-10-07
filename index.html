@@ -1915,3 +1915,210 @@ try{window.addEventListener('load',()=>{setTimeout(loadHomeNoreactRail,500)})}ca
   if(location.hash.startsWith('#/noreact')) setTimeout(()=>{try{loadNoreactFeed()}catch(e){}},0);
 })();
 </script>
+
+<script id="nora-noreact-final-fixes-v16">
+(function(){
+  'use strict';
+  /* NORA Noreact final fixes:
+     1) default audio ON (never render the video muted)
+     2) horizontal rail opens the exact clicked video
+     3) /noreact/:id opens/scolls to the exact video
+     4) caption expand buttons remain clickable above the content pointer layer
+     5) after upload, open the exact newly-created video
+  */
+
+  const NORA_NR_TARGET_KEY='__noraNoreactTarget';
+
+  function targetFromHash(){
+    const raw=location.hash.replace(/^#\/?/,'').split('/');
+    return raw[0]==='noreact' && raw[1] ? decodeURIComponent(raw.slice(1).join('/')) : '';
+  }
+
+  function scrollToNoreactTarget(id, tries){
+    if(!id)return;
+    tries=tries||0;
+    const root=document.getElementById('noreactScroll');
+    const item=document.querySelector('.noreact-item[data-video-id="'+CSS.escape(String(id))+'"]');
+    if(item&&root){
+      const top=item.offsetTop;
+      root.scrollTo({top,behavior:tries<2?'auto':'smooth'});
+      setTimeout(()=>{
+        const v=item.querySelector('video');
+        if(v){
+          v.muted=false;
+          v.play().then(()=>{
+            item.classList.remove('is-paused');
+            const mute=item.querySelector('.noreact-mute');
+            if(mute)mute.innerHTML=noreactIcon('volume');
+          }).catch(()=>{
+            /* Browser autoplay policy may require one user gesture. Keep audio state ON. */
+            v.muted=false;
+          });
+        }
+      },120);
+      sessionStorage.setItem(NORA_NR_TARGET_KEY,String(id));
+      return true;
+    }
+    if(tries<30)setTimeout(()=>scrollToNoreactTarget(id,tries+1),100);
+    return false;
+  }
+
+  function activateVisibleAudio(){
+    document.querySelectorAll('.noreact-item video').forEach(v=>{
+      v.muted=false;
+    });
+  }
+
+  /* Replace the final card renderer so videos are NOT born muted. */
+  const oldCard=window.noreactCardMarkup;
+  if(oldCard){
+    window.noreactCardMarkup=function(d,v,rail){
+      const html=oldCard(d,v,rail);
+      if(!rail){
+        return html.replace(/(<video\b[^>]*?)\s+muted(?=[\s>])/i,'$1');
+      }
+      return html.replace(/(<video\b[^>]*?)\s+muted(?=[\s>])/i,'$1');
+    };
+  }
+
+  /* Existing setup forcibly mutes videos. Patch the actual DOM after setup and
+     re-apply audio-on whenever the active reel changes. */
+  function forceAudioOn(){
+    document.querySelectorAll('.noreact-item video').forEach(v=>{
+      v.defaultMuted=false;
+      v.muted=false;
+      v.removeAttribute('muted');
+    });
+  }
+
+  const audioObserver=new MutationObserver(()=>{
+    if(document.querySelector('.noreact-item'))forceAudioOn();
+  });
+  audioObserver.observe(document.body,{childList:true,subtree:true});
+
+  document.addEventListener('click',function(e){
+    /* The home horizontal Noreact rail used to discard the clicked ID and always
+       route to the first/default reel. Capture it before the old handler runs. */
+    const rail=e.target.closest?.('.noreact-rail-card');
+    if(rail){
+      const id=rail.dataset.videoId;
+      if(id){
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        location.hash='#/noreact/'+encodeURIComponent(id);
+      }
+    }
+  },true);
+
+  /* Caption buttons sit inside .noreact-content, which is intentionally
+     pointer-events:none for the overlay. Give only the interactive caption
+     controls pointer events, without changing the rest of the layout. */
+  const style=document.createElement('style');
+  style.textContent=`
+    body.noreact-mode .noreact-caption{pointer-events:auto!important;position:relative;z-index:8}
+    body.noreact-mode .noreact-caption .noreact-more{pointer-events:auto!important;position:relative;z-index:9;display:inline-block;cursor:pointer}
+    body.noreact-mode .noreact-content{pointer-events:none!important}
+    body.noreact-mode .noreact-author{pointer-events:auto!important}
+  `;
+  document.head.appendChild(style);
+
+  /* Route support: the existing renderer remains intact; after it renders,
+     jump to /noreact/:id instead of always staying on the first reel. */
+  function resolveTarget(){
+    const id=targetFromHash();
+    if(!id)return;
+    setTimeout(()=>{
+      activateVisibleAudio();
+      scrollToNoreactTarget(id,0);
+    },80);
+    setTimeout(()=>scrollToNoreactTarget(id,0),450);
+    setTimeout(()=>scrollToNoreactTarget(id,0),1000);
+  }
+
+  window.addEventListener('hashchange',function(){
+    if(targetFromHash())resolveTarget();
+  });
+
+  /* Initial load on a direct /noreact/:id URL. */
+  if(targetFromHash())resolveTarget();
+
+  /* Patch the latest upload function. It still uses the existing Cloudinary
+     upload and Firestore save logic; only the final navigation changes. */
+  const originalUpload=window.noraModernUpload;
+  if(originalUpload){
+    window.noraModernUpload=async function(ev){
+      /* Preserve the original upload implementation but intercept its final
+         #/noreact navigation by temporarily capturing the created ID is not
+         possible from outside, so the replacement below mirrors the existing
+         Cloudinary + Firestore flow exactly and stores the new document ID. */
+      ev?.preventDefault?.();
+      const user=auth?.currentUser;
+      if(!user){location.hash='#/login';return false;}
+      const file=document.getElementById('noreactVideoFile')?.files?.[0];
+      const status=document.getElementById('noreactUploadStatus');
+      const btn=document.getElementById('noraModernPublishBtn');
+      const progress=document.getElementById('noraUploadProgress')?.querySelector('i');
+      if(!file){showNoraToast?.('Pilih video terlebih dahulu.');return false;}
+      if(!file.type.startsWith('video/')){showNoraToast?.('File harus berupa video.');return false;}
+      if(file.size>100*1024*1024){showNoraToast?.('Ukuran maksimal 100 MB.');return false;}
+      try{
+        if(btn){btn.disabled=true;btn.textContent='Mengunggah…';}
+        if(progress)progress.style.width='10%';
+        if(status)status.textContent='Mengunggah video…';
+        const endpoint=window.CLOUDINARY_VIDEO_UPLOAD_URL;
+        const preset=window.CLOUDINARY_UPLOAD_PRESET;
+        if(!endpoint||!preset)throw new Error('Cloudinary belum dikonfigurasi.');
+        const data=await new Promise((resolve,reject)=>{
+          const fd=new FormData();fd.append('file',file);fd.append('upload_preset',preset);
+          const xhr=new XMLHttpRequest();xhr.open('POST',endpoint,true);
+          xhr.upload.onprogress=e=>{
+            if(e.lengthComputable){
+              const pct=Math.max(1,Math.min(99,Math.round(e.loaded/e.total*100)));
+              if(progress)progress.style.width=pct+'%';
+              if(status)status.textContent='Mengunggah video '+pct+'%…';
+            }
+          };
+          xhr.onerror=()=>reject(new Error('Jaringan gagal saat upload ke Cloudinary.'));
+          xhr.onload=()=>{
+            let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch(_){return reject(new Error('Respons Cloudinary tidak valid.'))}
+            if(xhr.status<200||xhr.status>=300)return reject(new Error(d?.error?.message||'Cloudinary menolak upload.'));
+            resolve(d);
+          };
+          xhr.send(fd);
+        });
+        const videoUrl=data.secure_url||data.url;
+        if(!videoUrl)throw new Error('Cloudinary tidak mengembalikan URL video.');
+        if(progress)progress.style.width='75%';
+        const ps=await db.collection('users').doc(user.uid).get();
+        const p=ps.exists?ps.data():{};
+        const hashtags=[...new Set((document.getElementById('noreactVideoHashtags')?.value||'').split(/\s+/).map(x=>x.replace(/^#/,'').toLowerCase()).filter(Boolean))];
+        const ref=await db.collection('noreacts').add({
+          videoUrl,
+          description:(document.getElementById('noreactVideoDescription')?.value||'').trim(),
+          hashtags,status:'published',authorId:user.uid,
+          author:{uid:user.uid,name:p.name||user.displayName||'NORA Reader',handle:p.handle||user.email?.split('@')[0]||'nora-reader',photoURL:p.photoURL||user.photoURL||'',verified:!!p.verified},
+          likes:0,views:0,comments:0,shares:0,
+          createdAt:firebase.firestore.FieldValue.serverTimestamp()
+        });
+        if(progress)progress.style.width='100%';
+        if(status)status.textContent='Berhasil diterbitkan.';
+        showNoraToast?.('Noreact berhasil diterbitkan.');
+        /* Exact uploaded document, not the default/first reel. */
+        setTimeout(()=>{location.hash='#/noreact/'+encodeURIComponent(ref.id);},350);
+      }catch(err){
+        console.error(err);
+        if(status)status.textContent='Upload gagal: '+(err?.message||'');
+        showNoraToast?.('Upload Noreact gagal.');
+      }finally{
+        if(btn){btn.disabled=false;btn.textContent='Terbitkan Noreact';}
+      }
+      return false;
+    };
+  }
+
+  /* Fix any renderer/setup that re-adds muted after this patch. */
+  setInterval(()=>{
+    if(location.hash.startsWith('#/noreact'))forceAudioOn();
+  },1200);
+})();
+</script>
